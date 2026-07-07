@@ -1,0 +1,381 @@
+# PICRUSt2/KEGG 功能预测与基因型热图
+
+本节记录基于现有 DADA2 ASV 结果进行 PICRUSt2 功能预测，并将 KO 预测丰度汇总到 KEGG BRITE 二级功能分类后，绘制不同 `FUT1` 基因型（AA/GA/GG）的 KEGG 功能热图。
+
+## 输入文件
+
+PICRUSt2 使用两个核心输入：
+
+- ASV 代表序列：`data/dada2-result/asv.fasta`
+- ASV 丰度表：`data/dada2-result/asv-table.csv`
+
+其中 `asv-table.csv` 为“样本 × ASV”格式，PICRUSt2/BIOM 输入需要“ASV × 样本”格式，因此运行前先在服务器上转置为 `work/asv-table.tsv`，再转换为 BIOM 文件。
+
+```{r}
+#| label: picrust-input-check
+#| message: false
+asv_table <- read.csv("data/dada2-result/asv-table.csv", row.names = 1, check.names = FALSE)
+sample_table <- read.csv("data/amplicon-sequencing/sample_table_mt.csv", row.names = 1, check.names = FALSE)
+
+tibble::tibble(
+  item = c("Samples in ASV table", "ASVs in ASV table", "Samples with genotype metadata"),
+  n = c(nrow(asv_table), ncol(asv_table), nrow(sample_table))
+)
+```
+
+```{r}
+#| label: genotype-sample-counts
+sample_table |>
+  dplyr::count(genotype, name = "n_samples")
+```
+
+## 服务器运行 PICRUSt2
+
+将输入文件上传至服务器临时目录：
+
+```{bash}
+#| label: upload-picrust-input
+#| eval: false
+REMOTE_BASE="/tmp/pig16S_picrust2_20260706_173216"
+
+ssh gaoch@cloud.bio-spring.top "mkdir -p ${REMOTE_BASE}/input ${REMOTE_BASE}/work ${REMOTE_BASE}/logs"
+
+scp data/dada2-result/asv-table.csv \
+    data/dada2-result/asv.fasta \
+    gaoch@cloud.bio-spring.top:${REMOTE_BASE}/input/
+```
+
+在服务器上将 ASV 表转置、转换为 BIOM，并检查 ASV ID 是否与 FASTA 完全匹配：
+
+```{bash}
+#| label: prepare-biom-on-server
+#| eval: false
+cd /tmp/pig16S_picrust2_20260706_173216
+
+python3 - <<'PY'
+import csv
+from pathlib import Path
+
+inp = Path("input/asv-table.csv")
+out = Path("work/asv-table.tsv")
+
+with inp.open(newline="") as f:
+    rows = list(csv.reader(f))
+
+header = rows[0][1:]
+samples = [
+    r[0].replace("_F_filt.fq.gz", "")
+        .replace("_R_filt.fq.gz", "")
+        .replace(".fq.gz", "")
+    for r in rows[1:]
+]
+
+with out.open("w", newline="") as f:
+    w = csv.writer(f, delimiter="\t", lineterminator="\n")
+    w.writerow(["#OTU ID", *samples])
+    for j, asv in enumerate(header, start=1):
+        w.writerow([asv, *[r[j] for r in rows[1:]]])
+
+print(f"wrote {out} with {len(header)} ASVs and {len(samples)} samples")
+PY
+
+python3 - <<'PY'
+from pathlib import Path
+
+table_ids = []
+with Path("work/asv-table.tsv").open() as f:
+    next(f)
+    for line in f:
+        table_ids.append(line.split("\t", 1)[0])
+
+fasta_ids = [
+    line[1:].strip().split()[0]
+    for line in Path("input/asv.fasta").open()
+    if line.startswith(">")
+]
+
+shared = set(table_ids) & set(fasta_ids)
+print(f"table ASVs: {len(table_ids)}; fasta ASVs: {len(fasta_ids)}; shared: {len(shared)}")
+if len(shared) != len(table_ids) or len(shared) != len(fasta_ids):
+    raise SystemExit("ASV IDs do not match between feature table and FASTA.")
+PY
+
+export PATH="/home/anaconda3/envs/picrust2/bin:$HOME/.local/bin:$PATH"
+biom convert \
+  -i work/asv-table.tsv \
+  -o work/feature-table.biom \
+  --table-type="OTU table" \
+  --to-json
+```
+
+运行 PICRUSt2。服务器共有 80 个逻辑 CPU，本次使用 `-p 32` 运行：
+
+```{bash}
+#| label: run-picrust2
+#| eval: false
+cd /tmp/pig16S_picrust2_20260706_173216
+export PATH="/home/anaconda3/envs/picrust2/bin:$HOME/.local/bin:$PATH"
+
+nohup picrust2_pipeline.py \
+  -s input/asv.fasta \
+  -i work/feature-table.biom \
+  -o picrust2_output \
+  -p 32 \
+  --remove_intermediate \
+  --stratified \
+  > logs/run.log 2>&1 &
+```
+
+运行结束后打包并下载：
+
+```{bash}
+#| label: download-picrust-output
+#| eval: false
+ssh gaoch@cloud.bio-spring.top \
+  "cd /tmp/pig16S_picrust2_20260706_173216 && tar -czf picrust2_output.tar.gz picrust2_output work/asv-table.tsv work/feature-table.biom logs"
+
+mkdir -p data/picrust2-result
+scp gaoch@cloud.bio-spring.top:/tmp/pig16S_picrust2_20260706_173216/picrust2_output.tar.gz \
+    data/picrust2-result/
+
+tar -xzf data/picrust2-result/picrust2_output.tar.gz \
+    -C data/picrust2-result
+```
+
+## PICRUSt2 输出检查
+
+```{r}
+#| label: picrust-output-files
+picrust_files <- c(
+  KO = "data/picrust2-result/picrust2_output/KO_metagenome_out/pred_metagenome_unstrat.tsv.gz",
+  EC = "data/picrust2-result/picrust2_output/EC_metagenome_out/pred_metagenome_unstrat.tsv.gz",
+  MetaCyc_pathway = "data/picrust2-result/picrust2_output/pathways_out/path_abun_unstrat.tsv.gz",
+  NSTI = "data/picrust2-result/picrust2_output/combined_marker_predicted_and_nsti.tsv.gz"
+)
+
+tibble::tibble(
+  result = names(picrust_files),
+  file = unname(picrust_files),
+  exists = file.exists(picrust_files),
+  n_lines = vapply(picrust_files, function(x) {
+    if (!file.exists(x)) return(NA_integer_)
+    length(readLines(gzfile(x), warn = FALSE))
+  }, integer(1))
+)
+```
+
+关键结果包括：
+
+- `KO_metagenome_out/pred_metagenome_unstrat.tsv.gz`：KO 预测丰度；
+- `EC_metagenome_out/pred_metagenome_unstrat.tsv.gz`：EC 预测丰度；
+- `pathways_out/path_abun_unstrat.tsv.gz`：MetaCyc pathway 预测丰度；
+- `combined_marker_predicted_and_nsti.tsv.gz`：预测 marker 和 NSTI 信息。
+
+本次 PICRUSt2 运行成功生成了 163 个样本的功能预测结果。KO 表包含 8,425 个 KO 功能项，EC 表包含 2,770 个酶编号，MetaCyc pathway 表包含 562 个通路。由于本节后续需要绘制 KEGG 功能分类热图，因此主要使用 KO 预测丰度表；MetaCyc pathway 表可用于后续单独的通路差异分析。
+
+PICRUSt2 日志中提示部分 ASV 与参考序列比对较差，未进入后续放置和预测。这是 PICRUSt2 的常规质量控制步骤，表示这些序列与参考系统发育树中的序列相似度不足，不适合进行可靠的功能推断。日志还显示有 5 条 ASV 的 NSTI 高于默认阈值 2.0，因此被移除。由于最终仍有 13,960 条 ASV 获得 marker/NSTI 信息，且样本层面的 weighted NSTI 很低，整体功能预测结果可以继续用于探索性比较。
+
+```{r}
+#| label: picrust-nsti-summary
+marker_nsti <- readr::read_tsv(
+  "data/picrust2-result/picrust2_output/combined_marker_predicted_and_nsti.tsv.gz",
+  show_col_types = FALSE
+)
+
+weighted_nsti <- readr::read_tsv(
+  "data/picrust2-result/picrust2_output/KO_metagenome_out/weighted_nsti.tsv.gz",
+  show_col_types = FALSE
+)
+
+tibble::tibble(
+  metric = c(
+    "ASVs with marker/NSTI prediction",
+    "Bacterial ASVs",
+    "Archaeal ASVs",
+    "Mean sequence NSTI",
+    "Median sequence NSTI",
+    "Mean sample weighted NSTI",
+    "Max sample weighted NSTI"
+  ),
+  value = c(
+    nrow(marker_nsti),
+    sum(marker_nsti$best_domain == "bac"),
+    sum(marker_nsti$best_domain == "arc"),
+    round(mean(marker_nsti$metadata_NSTI, na.rm = TRUE), 4),
+    round(median(marker_nsti$metadata_NSTI, na.rm = TRUE), 4),
+    round(mean(weighted_nsti$weighted_NSTI, na.rm = TRUE), 4),
+    round(max(weighted_nsti$weighted_NSTI, na.rm = TRUE), 4)
+  )
+)
+```
+
+NSTI（Nearest Sequenced Taxon Index）反映待预测序列与最近参考基因组之间的系统发育距离，数值越低通常表示预测越可靠。本数据集中样本加权 NSTI 的均值约为 0.042，最大值约为 0.088，说明大多数样本的预测都由较近的参考基因组支撑。需要注意的是，PICRUSt2 是基于 16S 系统发育位置推断功能潜力，而不是直接测得的宏基因组功能丰度，因此结论应表述为“预测功能潜力”或“推断功能组成”。
+
+## 汇总 KO 到 KEGG 二级功能分类
+
+示例图展示的是 KEGG 功能分类（如 `Carbohydrate metabolism`、`Signal transduction`、`Digestive system`）。因此这里使用 KEGG BRITE `ko00001` 将 KO 汇总到二级功能分类，再按 AA、GA、GG 三种基因型求平均相对丰度。
+
+```{r}
+#| label: kegg-heatmap-load-packages
+#| message: false
+#| warning: false
+library(tidyverse)
+library(pheatmap)
+library(RColorBrewer)
+```
+
+```{r}
+#| label: parse-kegg-brite
+dir.create("data/picrust2-result/derived", showWarnings = FALSE, recursive = TRUE)
+
+ko_file <- "data/picrust2-result/picrust2_output/KO_metagenome_out/pred_metagenome_unstrat.tsv.gz"
+brite_url <- "https://rest.kegg.jp/get/br:ko00001"
+brite_file <- "data/picrust2-result/derived/ko00001.keg"
+
+if (!file.exists(brite_file)) {
+  download.file(brite_url, brite_file, quiet = TRUE)
+}
+
+parse_ko_brite <- function(path) {
+  lines <- readLines(path, warn = FALSE)
+  current_b <- NA_character_
+  out <- vector("list", length(lines))
+  n <- 0L
+
+  for (line in lines) {
+    if (grepl("^B\\s+", line)) {
+      current_b <- sub("^B\\s+\\d+\\s+", "", line)
+    } else if (grepl("^D\\s+K\\d{5}", line) && !is.na(current_b)) {
+      ko <- sub("^D\\s+(K\\d{5}).*$", "\\1", line)
+      n <- n + 1L
+      out[[n]] <- data.frame(ko = paste0("ko:", ko), kegg_class = current_b)
+    }
+  }
+
+  bind_rows(out[seq_len(n)]) |>
+    distinct(ko, kegg_class)
+}
+
+ko_map <- parse_ko_brite(brite_file)
+ko_map |> count(kegg_class, name = "n_ko") |> arrange(desc(n_ko)) |> head(10)
+```
+
+```{r}
+#| label: summarize-kegg-by-genotype
+sample_meta <- read_csv("data/amplicon-sequencing/sample_table_mt.csv", show_col_types = FALSE) |>
+  rename(sample = 1) |>
+  mutate(genotype = factor(genotype, levels = c("AA", "GA", "GG"))) |>
+  filter(!is.na(genotype))
+
+ko_abun <- read_tsv(ko_file, show_col_types = FALSE) |>
+  rename(ko = 1)
+
+sample_cols <- intersect(sample_meta$sample, colnames(ko_abun))
+
+class_by_sample <- ko_abun |>
+  inner_join(ko_map, by = "ko", relationship = "many-to-many") |>
+  select(kegg_class, all_of(sample_cols)) |>
+  group_by(kegg_class) |>
+  summarise(across(all_of(sample_cols), sum), .groups = "drop")
+
+sample_totals <- colSums(as.matrix(class_by_sample[, sample_cols, drop = FALSE]))
+class_rel <- class_by_sample
+class_rel[, sample_cols] <- sweep(
+  as.matrix(class_by_sample[, sample_cols, drop = FALSE]),
+  2,
+  sample_totals,
+  "/"
+) * 100
+
+genotype_levels <- c("AA", "GA", "GG")
+genotype_mat <- sapply(genotype_levels, function(g) {
+  cols <- sample_meta |>
+    filter(genotype == g, sample %in% sample_cols) |>
+    pull(sample)
+  rowMeans(as.matrix(class_rel[, cols, drop = FALSE]), na.rm = TRUE)
+})
+
+rownames(genotype_mat) <- class_rel$kegg_class
+genotype_mat <- genotype_mat[rowSums(genotype_mat) > 0, , drop = FALSE]
+
+scaled_mat <- t(scale(t(log10(genotype_mat + 1e-6))))
+scaled_mat[is.na(scaled_mat)] <- 0
+scaled_mat <- pmax(pmin(scaled_mat, 1), -1)
+
+class_variation <- apply(scaled_mat, 1, sd)
+class_variation[is.na(class_variation)] <- 0
+
+class_summary <- as.data.frame(genotype_mat) |>
+  rownames_to_column("kegg_class") |>
+  mutate(
+    class_variation = class_variation[kegg_class],
+    direction_index = GG - AA
+  ) |>
+  arrange(desc(class_variation), desc(rowSums(across(all_of(genotype_levels)))))
+
+write_csv(class_summary, "data/picrust2-result/derived/kegg_class_by_genotype.csv")
+
+class_summary |> head(10)
+```
+
+`class_variation` 是每个 KEGG 功能分类在 AA、GA、GG 三组之间的标准化丰度变异度。热图展示变异度最高的 35 个 KEGG 二级功能分类。
+
+## KEGG 功能热图
+
+```{r}
+#| label: fig-kegg-genotype-heatmap
+#| fig-width: 9.5
+#| fig-height: 7.6
+#| fig-cap: "Heatmap of KEGG pathways for different genotypes. Rows represent KEGG BRITE level-2 functional categories, and columns represent FUT1 genotypes. Relative abundances are row-standardized and shown from blue (low) to red (high)."
+plot_classes <- head(class_summary$kegg_class, min(35, nrow(class_summary)))
+plot_mat <- scaled_mat[plot_classes, genotype_levels, drop = FALSE]
+
+heat_cols <- colorRampPalette(c("#0615A8", "white", "#E31A1C"))(101)
+breaks <- seq(-1, 1, length.out = length(heat_cols) + 1)
+
+pheatmap(
+  plot_mat,
+  color = heat_cols,
+  breaks = breaks,
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  border_color = "#8A8A8A",
+  fontsize = 10,
+  fontsize_row = 8.5,
+  fontsize_col = 15,
+  angle_col = 0,
+  treeheight_row = 48,
+  treeheight_col = 34,
+  legend = TRUE,
+  legend_breaks = c(-1, -0.5, 0, 0.5, 1),
+  legend_labels = c("-1", "-0.5", "0", "0.5", "1"),
+  main = "Heatmap of KEGG pathways for different genotypes"
+)
+```
+
+## 结果解释
+
+热图中的每一行代表一个 KEGG BRITE 二级功能分类，每一列代表一个 `FUT1` 基因型。颜色不是原始丰度，而是每个功能分类在 AA、GA、GG 三组之间的行标准化相对丰度：红色表示该功能在该基因型中相对更高，蓝色表示相对更低，白色接近该功能在三组中的平均水平。
+
+```{r}
+#| label: kegg-class-interpretation-table
+top_positive <- class_summary |>
+  arrange(desc(direction_index)) |>
+  select(kegg_class, AA, GA, GG, class_variation, direction_index) |>
+  slice_head(n = 8) |>
+  mutate(direction = "Higher in GG than AA")
+
+top_negative <- class_summary |>
+  arrange(direction_index) |>
+  select(kegg_class, AA, GA, GG, class_variation, direction_index) |>
+  slice_head(n = 8) |>
+  mutate(direction = "Higher in AA than GG")
+
+bind_rows(top_positive, top_negative) |>
+  relocate(direction) |>
+  mutate(across(c(AA, GA, GG), ~ round(.x, 3)))
+```
+
+从汇总结果看，`Amino acid metabolism`、`Metabolism of cofactors and vitamins`、`Energy metabolism`、`Biosynthesis of other secondary metabolites` 和 `Cell motility` 等分类在 GG 方向相对更高；`Protein families: metabolism`、`Glycan biosynthesis and metabolism`、`Membrane transport`、`Nucleotide metabolism`、`Drug resistance: antimicrobial` 和 `Digestive system` 等分类在 AA 方向相对更高。GA 组通常位于 AA 与 GG 之间，提示部分功能预测结果随基因型呈梯度变化。
+
+这些结果适合作为功能预测层面的线索：它们说明不同基因型样本的菌群可能具有不同的代谢潜力，但并不能替代宏基因组或代谢组的直接测量。进一步分析时，可以基于 `kegg_class_by_genotype.csv` 或 KO 原始丰度表，对重点功能分类或具体 KO 进行统计检验和多重检验校正。

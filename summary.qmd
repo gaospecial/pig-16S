@@ -1,0 +1,57 @@
+# 分析总结
+
+本报告基于 DADA2 得到的 ASV 表、SILVA 138.2 分类注释和样本元数据，对 163 个猪粪便 16S 样本进行了群落多样性、物种组成、差异分类群和共现网络分析。样本覆盖 Duroc、Landrace、Yorkshire 三个品种，以及 AA、GA、GG 三种 `FUT1` 基因型；其中 AA 基因型仅出现在 Duroc 个体中，因此解释 AA 相关结果时需要同时考虑品种背景的混杂影响。
+
+## 数据与注释
+
+当前分析使用 DADA2-ASV 流程，而不是旧版 OTU 聚类流程。最终用于 `microeco` 分析的数据表包含 14,352 个 ASV 和 163 个样本，分类注释已更新为 SILVA 138.2 训练集结果。样本测序深度总体可支撑后续相对丰度、多样性和距离矩阵分析，但不同样本间序列量仍存在差异，因此 Alpha 多样性解释时应结合抽平和测序深度信息。
+
+与论文草稿相比，当前报告已经覆盖群落结构和分类组成的主要证据；但 PICRUSt2/KEGG 功能预测尚未在当前项目中生成，因此“AA 基因型富集消化系统、氨基酸代谢或核苷酸代谢通路”等功能性结论目前还不能由本报告直接支撑。
+
+## Alpha 多样性
+
+Alpha 多样性分析计算了 Observed、Chao1、Shannon 和 Simpson 指数，并分别按品种和 `FUT1` 基因型进行比较。元数据中的 `group` 与 `genotype` 完全对应（A=AA、B=GA、C=GG），因此本报告不再把 `group` 作为独立分组展示。品种层面的 Alpha 多样性结果用于对应论文中“Landrace 多样性较高、Duroc 较低”的结论；基因型层面的结果用于评估 AA、GA、GG 个体间丰富度和均匀度是否存在差异。
+
+需要特别注意的是，AA 基因型只存在于 Duroc 中，因此“AA 基因型多样性较低”不能简单解释为 `FUT1` 单独作用。更稳妥的表述是：当前数据中 AA/Duroc 背景样本表现出与 GA/GG 或其它品种不同的多样性特征，后续若要拆分基因型效应和品种效应，需要更平衡的实验设计或模型校正。
+
+## Beta 多样性
+
+Beta 多样性基于 Bray-Curtis 距离，通过 PCoA、NMDS 和组内距离分析展示样本间群落组成差异。整体上，品种和基因型分组均可用于观察群落结构是否存在分离趋势；如果排序图中不同颜色点云重叠较多，则提示组间差异相对较弱，可能受到统一饲养环境和样本来源一致性的影响。
+
+Beta 多样性结果可以支撑论文中“不同品种和基因型群体的肠道菌群结构总体相近但仍存在组成差异”的表述。与 Alpha 多样性类似，基因型结果仍需谨慎处理 AA 与 Duroc 品种背景的重叠。
+
+## 物种组成
+
+门水平组成显示，样本主要由 Bacillota/Firmicutes、Bacteroidota、Actinobacteriota、Methanobacteriota/Euryarchaeota 和 Proteobacteria 等类群构成，其中 Bacillota/Firmicutes 与 Bacteroidota 是主要优势门。这部分结果对应论文中“Firmicutes 和 Bacteroidetes/Bacteroidota 为优势菌门”的结论。
+
+属水平组成和重点菌属箱线图进一步展示了论文关注菌属在品种和基因型间的丰度分布。当前报告重点整理了 *Lactobacillus*、*Subdoligranulum*、*Methanobrevibacter* 和 *Catenibacterium* 等菌属。其中，*Lactobacillus* 与 Duroc/AA 背景的关系可通过属水平丰度图和 LEfSe 结果相互印证；*Subdoligranulum* 的基因型相关性则应结合当前显著性检验和 LEfSe 结果谨慎判断。
+
+## 差异分类群
+
+差异分析使用 LEfSe 筛选候选差异菌属。由于 `group` 与 `genotype` 等价，差异分析不再重复输出 A/B/C 分组结果，而是保留按品种和按基因型的 LEfSe 结果，直接对应论文中“品种和 `FUT1` 基因型影响肠道微生物组成”的核心结论。
+
+当前结果中，*Lactobacillus*、*Catenibacterium* 和 *Methanobrevibacter* 等论文关注菌属已经出现在重点菌属丰度分析或 LEfSe 差异结果中，说明这些菌属可作为论文结果描述的主要候选对象。需要避免过度解释的是：LEfSe 反映的是分组相关差异，并不等同于因果关系；尤其在 AA 只存在于 Duroc 的情况下，基因型差异菌也可能包含品种背景信号。
+
+## 网络分析
+
+共现网络分析基于属水平或 ASV 特征之间的相关关系，构建了全样本网络以及 AA、GA、GG 基因型网络。该部分结果可用于观察微生物之间的潜在共现结构、网络复杂度、模块化程度和 hub 节点。
+
+网络分析不是论文草稿当前主线结论的核心证据，但可以作为扩展结果：如果某些差异菌同时位于网络中的高连接度位置，则可作为后续讨论其群落互作意义的补充线索。由于相关网络不能直接证明互作或代谢依赖关系，网络结果应表述为“潜在共现关系”。
+
+## 论文结论对应关系
+
+当前报告最能支撑的论文结论包括：
+
+- 品种和 `FUT1` 基因型与断奶仔猪肠道菌群组成相关；
+- Landrace、Yorkshire 和 Duroc 之间存在 Alpha 多样性和物种组成差异；
+- AA/GA/GG 基因型之间可观察到菌群多样性、组成或差异菌趋势，但 AA 与 Duroc 背景混杂；
+- Bacillota/Firmicutes 和 Bacteroidota 是主要优势菌门；
+- *Lactobacillus*、*Catenibacterium*、*Methanobrevibacter* 等菌属是当前结果中值得重点描述的候选差异菌。
+
+当前报告尚不能直接支撑的论文结论包括：
+
+- PICRUSt2/KEGG 功能预测相关结论；
+- 基于旧 OTU 流程的 Venn 图具体数值；
+- 将 AA 相关菌群差异完全归因于 `FUT1` 基因型本身的强因果解释。
+
+因此，论文写作时建议将当前结果表述为“品种和 `FUT1` 基因型背景相关的菌群差异”，并在涉及 AA 基因型时明确说明 AA 样本全部来自 Duroc。若后续补充 PICRUSt2 输入文件和功能差异分析，可再将功能预测结论纳入主结果。

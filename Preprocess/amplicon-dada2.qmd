@@ -1,0 +1,320 @@
+# DADA2 分析流程
+
+::: {.callout-tip}
+使用 DADA2 对测序原始数据进行降噪处理，生成 ASV 表（Amplicon Sequence Variants）。
+:::
+
+## 载入包
+
+```{r}
+#| label: dada2-load-packages
+library(tidyverse)
+library(dada2)
+library(Biostrings)
+```
+
+## 配置数据路径
+
+```{r}
+#| label: setup-paths
+# Silva 数据库文件路径（需提前下载）。可通过环境变量 SILVA_DB_FILE 覆盖。
+SILVA_DB_FILE = Sys.getenv(
+    "SILVA_DB_FILE",
+    "/mnt/user/PUBLIC/silva_16s/silva_nr99_v138.2_toSpecies_trainset.fa.gz"
+)
+
+PROJECT_DIR = if (dir.exists("clean data")) "." else ".."
+
+# 原始数据目录（clean data 中的已拼接 FASTQ 文件）
+CLEAN_DATA_DIR = file.path(PROJECT_DIR, "clean data")
+RESULT_DIR = file.path(PROJECT_DIR, "data", "dada2-result")
+
+# 过滤后的 FASTQ 输出到项目目录，避免每次渲染都丢失中间结果。
+FILTERED_DATA_DIR = file.path(PROJECT_DIR, "data", "dada2-filtered")
+
+DADA2_MULTITHREAD = as.logical(Sys.getenv("DADA2_MULTITHREAD", "FALSE"))
+DADA2_NBASES = as.numeric(Sys.getenv("DADA2_NBASES", "1e8"))
+RUN_DADA2 = as.logical(Sys.getenv("RUN_DADA2", "FALSE"))
+RESULT_FILES = file.path(RESULT_DIR, c("asv-table.csv", "tax-table.csv", "asv.fasta"))
+SKIP_DADA2 = !RUN_DADA2 && all(file.exists(RESULT_FILES))
+
+if (SKIP_DADA2) {
+    cat("检测到已有 DADA2 结果，跳过重分析。若需重新运行完整 DADA2 流程，请将本章 DADA2 主流程 chunk 的 eval 选项改回 true。\n")
+}
+```
+
+## 获取拼接后的 FASTQ 文件
+
+我们的 clean data 中已经是拼接好的 FASTQ 文件，可直接用于 DADA2 降噪。
+
+```{r}
+#| label: list-assembled-files
+fnFs = list.files(CLEAN_DATA_DIR, pattern = "\\.assembled\\.fastq\\.gz$", full.names = TRUE)
+sample_names = basename(fnFs) |> str_remove("\\.assembled\\.fastq\\.gz$")
+
+if (length(fnFs) == 0) {
+    stop("未在 ", CLEAN_DATA_DIR, " 中找到 .assembled.fastq.gz 文件。")
+}
+
+cat("共找到", length(fnFs), "个拼接后的 FASTQ 文件\n")
+head(sample_names)
+```
+
+## 数据质量
+
+```{r}
+#| label: plot-quality-profiles
+#| eval: false
+#| fig-height: 8
+#| fig-width: 10
+library(cowplot)
+# 随机选 6 个样本查看质量（太多会拥挤）
+set.seed(42)
+idx = sample(length(fnFs), min(6, length(fnFs)))
+plots = lapply(fnFs[idx], function(f) {
+    plotQualityProfile(f) + ggtitle(basename(f))
+})
+plot_grid(plotlist = plots, ncol = 2)
+```
+
+## 过滤
+
+由于是已经拼接好的序列，我们只进行质量控制过滤（不截断，保留全长已拼接序列）。
+
+```{r}
+#| label: filter-and-trim
+#| eval: false
+dir.create(FILTERED_DATA_DIR, showWarnings = FALSE, recursive = TRUE)
+filtFs = file.path(FILTERED_DATA_DIR, paste0(sample_names, "_F_filt.fq.gz"))
+filter_stats_file = file.path(FILTERED_DATA_DIR, "filter-stats.csv")
+
+if (file.exists(filter_stats_file) && all(file.exists(filtFs))) {
+    cat("使用已有过滤结果:", FILTERED_DATA_DIR, "\n")
+    out = as.matrix(read.csv(filter_stats_file, row.names = 1, check.names = FALSE))
+} else {
+    cat("开始过滤", length(fnFs), "个 FASTQ 文件，输出目录:", FILTERED_DATA_DIR, "\n")
+    out = filterAndTrim(fnFs, filtFs,
+                  maxN = 0, maxEE = 2, truncQ = 2,
+                  rm.phix = FALSE,
+                  compress = TRUE,
+                  multithread = DADA2_MULTITHREAD)
+    write.csv(out, filter_stats_file)
+    cat("过滤完成。\n")
+}
+head(out)
+```
+
+```{r}
+#| label: filter-summary
+#| eval: false
+cat("过滤后保留序列占比:",
+    round(sum(out[,2]) / sum(out[,1]) * 100, 1), "%\n")
+
+# 识别序列量偏低的样本
+low_samples = out[out[,2] < 1000, , drop = FALSE]
+if (nrow(low_samples) > 0) {
+    cat("警告：以下样本过滤后序列数 < 1000，建议剔除：\n")
+    print(low_samples)
+}
+```
+
+## 学习错误率
+
+```{r}
+#| label: learn-error-rates
+#| eval: false
+cat("开始学习错误率。\n")
+errF = learnErrors(filtFs, nbases = DADA2_NBASES, multithread = DADA2_MULTITHREAD)
+cat("错误率学习完成。\n")
+```
+
+```{r}
+#| label: plot-error-rates
+#| eval: false
+#| fig-height: 5
+#| fig-width: 8
+plotErrors(errF, nominalQ = TRUE)
+```
+
+## 去重与降噪
+
+```{r}
+#| label: dereplicate-and-dada
+#| eval: false
+cat("开始去重。\n")
+derepFs = derepFastq(filtFs)
+cat("开始降噪。\n")
+dadaFs = dada(derepFs, err = errF, multithread = DADA2_MULTITHREAD, verbose = TRUE)
+cat("降噪完成。\n")
+```
+
+## 生成 ASV 表
+
+```{r}
+#| label: make-sequence-table
+#| eval: false
+# 对于已拼接序列，dada() 的输出已是最终 ASV
+seqtab = makeSequenceTable(dadaFs)
+cat("ASV 表维度（样本数 × ASV 数）:", dim(seqtab), "\n")
+```
+
+```{r}
+#| label: check-sequence-length
+#| eval: false
+#| fig-height: 4
+#| fig-width: 6
+# 查看序列长度分布
+len_dist = table(nchar(getSequences(seqtab)))
+plot(len_dist, type = 'l', xlab = "序列长度 (bp)", ylab = "ASV 数",
+     main = "ASV 序列长度分布")
+```
+
+### 按长度过滤
+
+V4 区的期望长度约为 250 bp，保留主峰附近的序列。
+
+```{r}
+#| label: filter-by-length
+#| eval: false
+max_len = which.max(len_dist) |> names() |> as.numeric()
+seqtab2 = seqtab[, nchar(getSequences(seqtab)) %in% (max_len - 30):(max_len + 30)]
+cat("按长度过滤后维度:", dim(seqtab2), "\n")
+cat("保留的序列占比:", round(sum(seqtab2) / sum(seqtab) * 100, 1), "%\n")
+```
+
+### 去嵌合体
+
+```{r}
+#| label: remove-chimeras
+#| eval: false
+seqtab.nochim = removeBimeraDenovo(seqtab2, multithread = DADA2_MULTITHREAD)
+cat("去嵌合体后维度:", dim(seqtab.nochim), "\n")
+cat("去嵌合体后保留的 ASV 数占比:", round(sum(seqtab.nochim) / sum(seqtab2) * 100, 1), "%\n")
+cat("去嵌合体后序列数占比:", round(dim(seqtab.nochim)[2] / dim(seqtab2)[2] * 100, 1), "%\n")
+```
+
+## 各步骤追踪
+
+```{r}
+#| label: track-reads
+#| eval: false
+getN = function(x) sum(getUniques(x))
+track = cbind(out, sapply(dadaFs, getN), rowSums(seqtab2), rowSums(seqtab.nochim))
+colnames(track) = c("input", "filtered", "denoised", "filter_by_len", "nonchim")
+rownames(track) = sample_names
+
+# 只显示前 20 行
+head(track, 20)
+```
+
+```{r}
+#| label: track-summary
+#| eval: false
+summary(track)
+```
+
+## 注释分类
+
+```{r}
+#| label: assign-taxonomy
+#| eval: false
+# 分配到属级别
+if (file.exists(SILVA_DB_FILE)) {
+    taxa = assignTaxonomy(seqtab.nochim, SILVA_DB_FILE, multithread = DADA2_MULTITHREAD, minBoot = 60)
+} else {
+    warning(
+        "未找到 SILVA 分类数据库：", SILVA_DB_FILE,
+        "。将 ASV 分类标记为 Unclassified；设置 SILVA_DB_FILE 环境变量后可重新生成分类注释。"
+    )
+    taxa = matrix(
+        "Unclassified",
+        nrow = ncol(seqtab.nochim),
+        ncol = 6,
+        dimnames = list(
+            colnames(seqtab.nochim),
+            c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus")
+        )
+    )
+}
+```
+
+```{r}
+#| label: assign-species
+#| eval: false
+# 尝试分配到种级别
+SILVA_SPECIES_FILE = str_replace(SILVA_DB_FILE, "trainset", "species_assignment")
+if (file.exists(SILVA_SPECIES_FILE)) {
+    taxa_species = assignSpecies(seqtab.nochim, SILVA_SPECIES_FILE)
+} else {
+    taxa_species = matrix(
+        NA_character_,
+        nrow = ncol(seqtab.nochim),
+        ncol = 1,
+        dimnames = list(colnames(seqtab.nochim), "Species")
+    )
+}
+```
+
+## 添加种水平注释
+
+```{r}
+#| label: merge-taxonomy
+#| eval: false
+# 将属级别和种级别注释合并
+taxa_with_species = cbind(taxa, Species = taxa_species[, "Species"])
+```
+
+## 保存结果
+
+```{r}
+#| label: save-results
+path_result = RESULT_DIR
+dir.create(path_result, showWarnings = FALSE, recursive = TRUE)
+```
+
+### 生成 ASV ID
+
+```{r}
+#| label: generate-asv-ids
+#| eval: false
+asv_sequence = getSequences(seqtab.nochim)
+library(digest)
+get_dna_id = function(seq, length = 8){
+    hash = digest::digest(seq, algo = "sha256", serialize = FALSE)
+    substr(hash, 1, length)
+}
+
+asv_id = paste0("ASV", sapply(asv_sequence, get_dna_id))
+```
+
+### 保存 FASTA
+
+```{r}
+#| label: save-fasta
+#| eval: false
+asv_fasta = paste0(">", asv_id, "\n", asv_sequence)
+writeLines(asv_fasta, file.path(path_result, "asv.fasta"))
+```
+
+### 保存 ASV 表和分类表
+
+```{r}
+#| label: save-tables
+#| eval: false
+colnames(seqtab.nochim) = asv_id
+write.csv(seqtab.nochim, file.path(path_result, "asv-table.csv"))
+
+rownames(taxa_with_species) = asv_id
+write.csv(taxa_with_species, file.path(path_result, "tax-table.csv"))
+```
+
+```{r}
+#| label: check-files
+cat("DADA2 分析结果已保存至:", RESULT_DIR, "\n")
+cat("- ASV 表:", file.path(RESULT_DIR, "asv-table.csv"), "\n")
+cat("- 分类表:", file.path(RESULT_DIR, "tax-table.csv"), "\n")
+cat("- ASV 序列:", file.path(RESULT_DIR, "asv.fasta"), "\n")
+if (!all(file.exists(RESULT_FILES))) {
+    stop("DADA2 结果文件不完整；请设置 RUN_DADA2=true 重新运行预处理流程。")
+}
+```

@@ -1,0 +1,45 @@
+# 项目概述
+
+## 项目信息
+
+- **项目名称**: 福农 166 个猪粪便 16S V4 区 Illumina PE250 测序及分析
+- **合同编号**: AWGT23091307-NJ
+- **测序区域**: 16S V4 (引物: 515a-806)
+- **测序平台**: Illumina PE250
+
+## 实验设计
+
+本实验共检测了 **166 个猪粪便样本**，涵盖三个品种（Duroc、Landrace、Yorkshire）和三种基因型（AA、GA、GG）。
+
+### 分组信息
+
+| 分组 | 样本数 | 品种×基因型组合 |
+|------|--------|-----------------|
+| A    | 18     | Duroc × AA      |
+| B    | 65     | Duroc(GA)/Landrace(GA)/Yorkshire(GA) |
+| C    | 80     | Duroc(GG)/Landrace(GG)/Yorkshire(GG) |
+
+### 品种与基因型分布
+
+| 品种 | AA | GA | GG |
+|------|----|----|-----|
+| Duroc | 18 | 23 | 20 |
+| Landrace | 0 | 23 | 40 |
+| Yorkshire | 0 | 19 | 20 |
+
+## 分析流程
+
+1. **DADA2 预处理**: 从原始 FASTQ 文件经质量过滤、降噪、合并、去嵌合体得到 ASV 表
+2. **物种注释**: 使用 Silva 数据库进行分类注释
+3. **数据整理**: 构建 `microeco` 所需的 `microtable` 对象
+4. **Alpha 多样性**: 计算 Shannon、Chao1、Observed、Simpson 指数
+5. **Beta 多样性**: PCoA / NMDS 分析、组间距离分析
+6. **物种组成**: 门/属水平相对丰度分析
+7. **差异分析**: LEfSe、ANCOMBC2、随机森林
+8. **网络分析**: 共现网络构建与分析
+
+## 数据文件
+
+- `raw data/` — 原始双端 FASTQ 文件（326 个文件，R1/R2 配对）
+- `clean data/` — 拼接后的 FASTQ 文件（163 个文件）
+- `info.xlsx` — 样本元数据信息

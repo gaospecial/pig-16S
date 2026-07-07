@@ -1,0 +1,20 @@
+/.quarto/
+/_book/
+/_freeze/
+.DS_Store
+.RData
+.Rhistory
+.Rproj.user/
+.tmp-*.md
+20260528.docx
+
+# Large sequencing inputs and derived read files are kept outside Git.
+/raw data/*.fq.gz
+/raw data/*.fastq.gz
+/clean data/*.fastq.gz
+/data/dada2-filtered/*.fq.gz
+
+# Large reference databases and PICRUSt2 outputs.
+/data/silva/*.fa.gz
+/data/picrust2-result/picrust2_output/**/*.gz
+/data/picrust2-result/picrust2_output/*.gz

@@ -1,0 +1,161 @@
+# Beta 多样性分析
+
+## 载入包
+
+```{r}
+#| label: beta-load-packages
+library(tidyverse)
+library(microeco)
+library(patchwork)
+library(ggplot2)
+library(jsonlite)
+source("figure-notes.R")
+```
+
+## 构建 microtable 对象
+
+```{r}
+#| label: beta-create-microtable
+otu_table <- read.csv("data/amplicon-sequencing/otu_table_mt.csv", row.names = 1, check.names = FALSE)
+sample_table <- read.csv("data/amplicon-sequencing/sample_table_mt.csv", row.names = 1, check.names = FALSE) |>
+    mutate(
+        group = factor(group, levels = c("A", "B", "C")),
+        breed = factor(breed, levels = c("Duroc", "Landrace", "Yorkshire")),
+        genotype = factor(genotype, levels = c("AA", "GA", "GG"))
+    )
+taxon_table <- read.csv("data/amplicon-sequencing/taxon_table_mt.csv", row.names = 1, check.names = FALSE)
+
+mt <- microtable$new(otu_table = otu_table, sample_table = sample_table, tax_table = taxon_table)
+```
+
+## 计算 Beta 多样性指标
+
+```{r}
+#| label: calc-beta
+mt$cal_betadiv()
+
+plot_group_distance_box = function(trans_obj, group_var) {
+    plot_data = trans_obj$res_group_distance
+    names(plot_data)[names(plot_data) != "Value"] = "group"
+    plot_data |>
+        ggplot(aes(x = group, y = Value, fill = group)) +
+        geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+        geom_jitter(width = 0.18, size = 1, alpha = 0.45) +
+        labs(x = group_var, y = "Bray-Curtis distance") +
+        theme_bw() +
+        theme(legend.position = "none")
+}
+```
+
+## PCoA 分析
+
+### 按品种比较
+
+```{r}
+#| label: fig-pcoa-by-breed
+#| fig-cap: "基于 Bray-Curtis 距离的 PCoA 分析，按品种着色。"
+t1 = trans_beta$new(dataset = mt, group = "breed", measure = "bray")
+t1$cal_ordination(method = "PCoA")
+t1$plot_ordination(plot_color = "breed", plot_type = c("point", "ellipse")) +
+    theme_bw()
+```
+
+
+```{r}
+#| label: note-pcoa-by-breed
+#| echo: false
+#| results: asis
+render_figure_note("pcoa-by-breed")
+```
+
+### 按基因型比较
+
+```{r}
+#| label: fig-pcoa-by-genotype
+#| fig-cap: "基于 Bray-Curtis 距离的 PCoA 分析，按基因型着色。"
+t1$plot_ordination(plot_color = "genotype", plot_type = c("point", "ellipse")) +
+    theme_bw()
+```
+
+
+```{r}
+#| label: note-pcoa-by-genotype
+#| echo: false
+#| results: asis
+render_figure_note("pcoa-by-genotype")
+```
+
+## NMDS 分析
+
+### 按品种比较
+
+```{r}
+#| label: fig-nmds-by-breed
+#| fig-cap: "基于 Bray-Curtis 距离的 NMDS 分析，按品种着色。"
+t1 = trans_beta$new(dataset = mt, group = "breed", measure = "bray")
+t1$cal_ordination(method = "NMDS")
+t1$plot_ordination(plot_color = "breed", plot_type = c("point", "ellipse")) +
+    theme_bw()
+```
+
+
+```{r}
+#| label: note-nmds-by-breed
+#| echo: false
+#| results: asis
+render_figure_note("nmds-by-breed")
+```
+
+### 按基因型比较
+
+```{r}
+#| label: fig-nmds-by-genotype
+#| fig-cap: "基于 Bray-Curtis 距离的 NMDS 分析，按基因型着色。"
+t1$cal_ordination(method = "NMDS")
+t1$plot_ordination(plot_color = "genotype", plot_type = c("point", "ellipse")) +
+    theme_bw()
+```
+
+
+```{r}
+#| label: note-nmds-by-genotype
+#| echo: false
+#| results: asis
+render_figure_note("nmds-by-genotype")
+```
+
+## 组内距离分析
+
+```{r}
+#| label: fig-within-group-distance-breed
+#| fig-cap: "不同品种组内的 Bray-Curtis 距离分布。"
+t1 = trans_beta$new(dataset = mt, group = "breed", measure = "bray")
+t1$cal_group_distance(within_group = TRUE)
+t1$cal_group_distance_diff(method = "wilcox")
+plot_group_distance_box(t1, "breed")
+```
+
+
+```{r}
+#| label: note-within-group-distance-breed
+#| echo: false
+#| results: asis
+render_figure_note("within-group-distance-breed")
+```
+
+```{r}
+#| label: fig-within-group-distance-genotype
+#| fig-cap: "不同基因型组内的 Bray-Curtis 距离分布。"
+t1 = trans_beta$new(dataset = mt, group = "genotype", measure = "bray")
+t1$cal_group_distance(within_group = TRUE)
+t1$cal_group_distance_diff(method = "wilcox")
+plot_group_distance_box(t1, "genotype")
+```
+
+
+```{r}
+#| label: note-within-group-distance-genotype
+#| echo: false
+#| results: asis
+render_figure_note("within-group-distance-genotype")
+```

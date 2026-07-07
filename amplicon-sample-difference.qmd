@@ -1,0 +1,103 @@
+# 差异分析
+
+## 载入包
+
+```{r}
+#| label: difference-load-packages
+library(tidyverse)
+library(microeco)
+library(patchwork)
+library(jsonlite)
+source("figure-notes.R")
+```
+
+## 构建 microtable 对象
+
+```{r}
+#| label: difference-create-microtable
+otu_table <- read.csv("data/amplicon-sequencing/otu_table_mt.csv", row.names = 1, check.names = FALSE)
+sample_table <- read.csv("data/amplicon-sequencing/sample_table_mt.csv", row.names = 1, check.names = FALSE) |>
+    mutate(
+        group = factor(group, levels = c("A", "B", "C")),
+        breed = factor(breed, levels = c("Duroc", "Landrace", "Yorkshire")),
+        genotype = factor(genotype, levels = c("AA", "GA", "GG"))
+    )
+taxon_table <- read.csv("data/amplicon-sequencing/taxon_table_mt.csv", row.names = 1, check.names = FALSE)
+
+mt <- microtable$new(otu_table = otu_table, sample_table = sample_table, tax_table = taxon_table)
+has_valid_taxa <- any(!is.na(taxon_table$Genus) & taxon_table$Genus != "" & taxon_table$Genus != "Unclassified")
+```
+
+## 保留高丰度物种
+
+高丰度物种是我们重点关注的分类群。过滤保留平均相对丰度 > 1% 的属。
+
+```{r}
+#| label: filter-abundant
+mt$cal_abund()
+
+# 保留平均相对丰度 > 0.1% 的属
+if (has_valid_taxa) {
+    mt$taxa_abund$Genus <- mt$taxa_abund$Genus[rowMeans(mt$taxa_abund$Genus) > 0.001, ]
+}
+
+# 同步更新其它表
+mt$tidy_dataset()
+```
+
+```{r}
+#| label: taxonomy-status
+if (!has_valid_taxa) {
+    cat("当前分类表没有有效属水平注释（SILVA 数据库缺失时会标记为 Unclassified）。差异分类群分析已跳过；提供 SILVA_DB_FILE 并重新运行 DADA2 注释后可启用本章分析。\n")
+}
+```
+
+## 按品种的差异分析
+
+```{r}
+#| label: fig-lefse-breed
+#| fig-cap: "品种间 LEfSe 差异菌属 LDA 得分图。"
+#| warning: false
+t2 = trans_diff$new(
+    dataset = mt,
+    method = "lefse",
+    group = "breed",
+    alpha = 0.05,
+    taxa_level = "Genus"
+)
+
+t2$plot_diff_bar(use_number = 1:20)
+```
+
+
+```{r}
+#| label: note-lefse-breed
+#| echo: false
+#| results: asis
+render_figure_note("lefse-breed")
+```
+
+## 按基因型的差异分析
+
+```{r}
+#| label: fig-lefse-genotype
+#| fig-cap: "基因型间 LEfSe 差异菌属 LDA 得分图。"
+#| warning: false
+t3 = trans_diff$new(
+    dataset = mt,
+    method = "lefse",
+    group = "genotype",
+    alpha = 0.05,
+    taxa_level = "Genus"
+)
+
+t3$plot_diff_bar(use_number = 1:20)
+```
+
+
+```{r}
+#| label: note-lefse-genotype
+#| echo: false
+#| results: asis
+render_figure_note("lefse-genotype")
+```

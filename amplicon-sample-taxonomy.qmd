@@ -1,0 +1,313 @@
+# 物种组成分析
+
+## 载入包
+
+```{r}
+#| label: taxonomy-load-packages
+library(tidyverse)
+library(microeco)
+library(patchwork)
+library(jsonlite)
+library(scales)
+source("figure-notes.R")
+
+theme_set(theme_bw())
+```
+
+## 构建 microtable 对象
+
+```{r}
+#| label: taxonomy-create-microtable
+otu_table <- read.csv("data/amplicon-sequencing/otu_table_mt.csv", row.names = 1, check.names = FALSE)
+sample_table <- read.csv("data/amplicon-sequencing/sample_table_mt.csv", row.names = 1, check.names = FALSE) |>
+    mutate(
+        group = factor(group, levels = c("A", "B", "C")),
+        breed = factor(breed, levels = c("Duroc", "Landrace", "Yorkshire")),
+        genotype = factor(genotype, levels = c("AA", "GA", "GG"))
+    )
+taxon_table <- read.csv("data/amplicon-sequencing/taxon_table_mt.csv", row.names = 1, check.names = FALSE)
+
+# 剔除 NA 分类
+taxon_table = subset(taxon_table, !is.na(Phylum))
+
+mt <- microtable$new(otu_table = otu_table, sample_table = sample_table, tax_table = taxon_table)
+mt$tidy_dataset()
+```
+
+## 门水平组成
+
+```{r}
+#| label: fig-phylum-bar-breed
+#| fig-width: 12
+#| fig-height: 5
+#| fig-cap: "门水平相对丰度堆叠柱状图，按品种分面。"
+t1 = trans_abund$new(dataset = mt, taxrank = "Phylum", ntaxa = 8)
+t1$plot_bar(others_color = "grey70", facet = "breed", xtext_keep = FALSE, legend_text_italic = FALSE)
+```
+
+
+```{r}
+#| label: note-phylum-bar-breed
+#| echo: false
+#| results: asis
+render_figure_note("phylum-bar-breed")
+```
+
+```{r}
+#| label: fig-phylum-bar-genotype
+#| fig-width: 12
+#| fig-height: 5
+#| fig-cap: "门水平相对丰度堆叠柱状图，按基因型分面。"
+t1$plot_bar(others_color = "grey70", facet = "genotype", xtext_keep = FALSE, legend_text_italic = FALSE)
+```
+
+
+```{r}
+#| label: note-phylum-bar-genotype
+#| echo: false
+#| results: asis
+render_figure_note("phylum-bar-genotype")
+```
+
+## 属水平组成
+
+```{r}
+#| label: fig-genus-bar-breed
+#| fig-width: 12
+#| fig-height: 5
+#| fig-cap: "属水平相对丰度堆叠柱状图，按品种分面。"
+t2 <- trans_abund$new(dataset = mt, taxrank = "Genus", ntaxa = 8)
+t2$plot_bar(others_color = "grey70", facet = "breed", xtext_keep = FALSE)
+```
+
+
+```{r}
+#| label: note-genus-bar-breed
+#| echo: false
+#| results: asis
+render_figure_note("genus-bar-breed")
+```
+
+```{r}
+#| label: fig-genus-bar-genotype
+#| fig-width: 12
+#| fig-height: 5
+#| fig-cap: "属水平相对丰度堆叠柱状图，按 FUT1 基因型分面。"
+t2$plot_bar(others_color = "grey70", facet = "genotype", xtext_keep = FALSE)
+```
+
+
+```{r}
+#| label: note-genus-bar-genotype
+#| echo: false
+#| results: asis
+render_figure_note("genus-bar-genotype")
+```
+
+## 高丰度属差异
+
+```{r}
+#| label: prepare-genus-box-data
+mt$cal_abund()
+
+extract_genus_name <- function(x) {
+    x |>
+        str_extract("(^|\\|)g__[^|]*$") |>
+        str_remove("^\\|") |>
+        str_remove("^g__") |>
+        str_replace_all("_", " ") |>
+        na_if("")
+}
+
+is_meaningful_genus <- function(x) {
+    !is.na(x) &
+        !str_detect(str_to_lower(x), "unclassified|uncultured|unknown|metagenome|norank|ambiguous") &
+        !str_detect(x, "^[A-Z]+[-_ ]?\\d") &
+        !str_detect(x, "\\bgroup\\b")
+}
+
+top8_genus <- mt$taxa_abund$Genus |>
+    as.data.frame(check.names = FALSE) |>
+    rownames_to_column("Genus") |>
+    mutate(Genus_name = extract_genus_name(Genus)) |>
+    filter(is_meaningful_genus(Genus_name)) |>
+    mutate(mean_abundance = rowMeans(pick(where(is.numeric)), na.rm = TRUE)) |>
+    slice_max(mean_abundance, n = 8, with_ties = FALSE) |>
+    arrange(desc(mean_abundance)) |>
+    mutate(Genus_clean = str_trunc(Genus_name, width = 18)) |>
+    mutate(
+        Genus_clean = if_else(
+            duplicated(Genus_clean) | duplicated(Genus_clean, fromLast = TRUE),
+            paste0(Genus_clean, " ", row_number()),
+            Genus_clean
+        )
+    )
+
+genus_abundance_data <- mt$taxa_abund$Genus |>
+    as.data.frame(check.names = FALSE) |>
+    rownames_to_column("Genus") |>
+    pivot_longer(-Genus, names_to = "sample", values_to = "abundance") |>
+    left_join(
+        mt$sample_table |> as.data.frame() |> rownames_to_column("sample"),
+        by = "sample"
+    )
+
+genus_box_data <- genus_abundance_data |>
+    semi_join(top8_genus, by = "Genus") |>
+    left_join(top8_genus |> select(Genus, Genus_name, mean_abundance, Genus_clean), by = "Genus") |>
+    mutate(Genus_clean = factor(Genus_clean, levels = top8_genus$Genus_clean))
+
+significance_label <- function(p) {
+    case_when(
+        p < 0.001 ~ "***",
+        p < 0.01 ~ "**",
+        p < 0.05 ~ "*",
+        TRUE ~ NA_character_
+    )
+}
+
+pairwise_significance <- function(data, group_var) {
+    group_levels <- levels(droplevels(data[[group_var]]))
+    comparisons <- combn(group_levels, 2, simplify = FALSE)
+    empty_result <- tibble(
+        group1 = character(),
+        group2 = character(),
+        p_value = numeric(),
+        p_adjust = numeric(),
+        label = character(),
+        Genus_clean = factor(levels = levels(data$Genus_clean)),
+        x = numeric(),
+        xend = numeric(),
+        y = numeric(),
+        y_text = numeric(),
+        tick = numeric()
+    )
+
+    result <- map_dfr(levels(data$Genus_clean), function(genus_name) {
+        genus_data <- data |> filter(Genus_clean == genus_name)
+        y_range <- range(genus_data$abundance, na.rm = TRUE)
+        y_span <- diff(y_range)
+        if (!is.finite(y_span) || y_span == 0) {
+            y_span <- max(y_range[2], 0.01)
+        }
+
+        tests <- map_dfr(comparisons, function(pair) {
+            x1 <- genus_data |> filter(.data[[group_var]] == pair[1]) |> pull(abundance)
+            x2 <- genus_data |> filter(.data[[group_var]] == pair[2]) |> pull(abundance)
+
+            tibble(
+                group1 = pair[1],
+                group2 = pair[2],
+                p_value = wilcox.test(x1, x2, exact = FALSE)$p.value
+            )
+        }) |>
+            mutate(
+                p_adjust = p.adjust(p_value, method = "BH"),
+                label = significance_label(p_adjust)
+            ) |>
+            filter(!is.na(label)) |>
+            arrange(p_adjust)
+
+        if (nrow(tests) == 0) {
+            return(empty_result)
+        }
+
+        tests |>
+            mutate(
+                Genus_clean = genus_name,
+                x = match(group1, group_levels),
+                xend = match(group2, group_levels),
+                y = y_range[2] + y_span * (0.04 + row_number() * 0.055),
+                y_text = y + y_span * 0.018,
+                tick = y_span * 0.018
+            )
+    })
+
+    bind_rows(empty_result, result) |>
+        mutate(Genus_clean = factor(Genus_clean, levels = levels(data$Genus_clean)))
+}
+
+plot_top8_genus_box <- function(group_var, x_label) {
+    sig_data <- pairwise_significance(genus_box_data, group_var)
+
+    genus_box_data |>
+        ggplot(aes(x = .data[[group_var]], y = abundance, fill = .data[[group_var]])) +
+        geom_boxplot(outlier.shape = NA, alpha = 0.75, width = 0.65) +
+        geom_jitter(width = 0.16, size = 1, alpha = 0.5) +
+        geom_segment(
+            data = sig_data,
+            aes(x = x, xend = xend, y = y, yend = y),
+            inherit.aes = FALSE
+        ) +
+        geom_segment(
+            data = sig_data,
+            aes(x = x, xend = x, y = y - tick, yend = y),
+            inherit.aes = FALSE
+        ) +
+        geom_segment(
+            data = sig_data,
+            aes(x = xend, xend = xend, y = y - tick, yend = y),
+            inherit.aes = FALSE
+        ) +
+        geom_text(
+            data = sig_data,
+            aes(x = (x + xend) / 2, y = y_text, label = label),
+            inherit.aes = FALSE,
+            size = 3.5
+        ) +
+        facet_wrap(~ Genus_clean, scales = "free_y", ncol = 4) +
+        scale_y_continuous(labels = percent_format(accuracy = 0.1), expand = expansion(mult = c(0.04, 0.14))) +
+        labs(x = x_label, y = "Relative abundance") +
+        theme(
+            legend.position = "none",
+            strip.text = element_text(face = "italic"),
+            axis.text.x = element_text(angle = 30, hjust = 1)
+        )
+}
+```
+
+```{r}
+#| label: tbl-top8-genus
+#| echo: false
+top8_genus |>
+    transmute(
+        Genus = Genus_clean,
+        Mean_relative_abundance = mean_abundance
+    ) |>
+    knitr::kable(
+        digits = 4,
+        caption = "全体样本中平均相对丰度最高的 8 个已命名属。"
+    )
+```
+
+```{r}
+#| label: fig-genus-box-breed
+#| fig-width: 11
+#| fig-height: 6.5
+#| fig-cap: "全体样本平均相对丰度最高的 8 个已命名属在不同品种中的相对丰度分布。每个面板对应一个属，箱线图概括组内分布，散点代表单个样本；横线和星号表示两两 Wilcoxon 秩和检验经 BH 校正后仍显著的组间差异，*、**、*** 分别表示校正后 P < 0.05、0.01、0.001。"
+plot_top8_genus_box("breed", "Breed")
+```
+
+
+```{r}
+#| label: note-genus-box-breed
+#| echo: false
+#| results: asis
+render_figure_note("genus-box-breed")
+```
+
+```{r}
+#| label: fig-genus-box-genotype
+#| fig-width: 11
+#| fig-height: 6.5
+#| fig-cap: "全体样本平均相对丰度最高的 8 个已命名属在不同 FUT1 基因型中的相对丰度分布。属的选择基于样本平均相对丰度排序，并剔除未分类、未培养、unknown、norank、group 等难以解释的标签；显著性标注来自每个属内 AA、GA、GG 两两 Wilcoxon 秩和检验及 BH 多重检验校正。"
+plot_top8_genus_box("genotype", "FUT1 genotype")
+```
+
+
+```{r}
+#| label: note-genus-box-genotype
+#| echo: false
+#| results: asis
+render_figure_note("genus-box-genotype")
+```

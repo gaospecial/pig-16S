@@ -1,0 +1,154 @@
+# 数据处理与 microtable 构建
+
+本项目使用 `microeco` 软件包进行数据分析。这里从 DADA2 的输出结果和 `info.xlsx` 元数据文件构建所需的 `microtable` 对象。
+
+## 载入包
+
+```{r}
+#| label: data-load-packages
+library(tidyverse)
+library(microeco)
+library(readxl)
+library(jsonlite)
+source("figure-notes.R")
+```
+
+## 读取 DADA2 结果
+
+```{r}
+#| label: read-dada2-results
+PATH = "data/dada2-result"
+
+# OTU/ASV 表
+otu_table = read_csv(file.path(PATH, "asv-table.csv"))
+otu_table = column_to_rownames(otu_table, var = names(otu_table)[1])
+rownames(otu_table) = str_remove(rownames(otu_table), "_F_filt\\.fq\\.gz$")
+```
+
+```{r}
+#| label: check-otu-table
+cat("ASV 表维度:", dim(otu_table), "\n")
+cat("样本数:", nrow(otu_table), "\n")
+cat("ASV 数:", ncol(otu_table), "\n")
+```
+
+### 整理 ASV 表格式
+
+`microeco` 对 `otu_table` 的格式有严格要求：**行必须是 Taxa（ASV），列必须是 Samples**。
+
+```{r}
+#| label: transpose-otu-table
+# DADA2 输出的 ASV 表是：行=样本，列=ASV；microeco 需要：行=ASV，列=样本。
+otu_table = t(otu_table) |> as.data.frame(check.names = FALSE)
+```
+
+## 构建样本元数据表
+
+从 `info.xlsx` 提取样品分组信息。
+
+```{r}
+#| label: build-sample-table
+info = read_excel("info.xlsx") |> janitor::clean_names()
+
+# 查看 info 的列名
+names(info)
+```
+
+```{r}
+#| label: build-sample-table-parse
+sample_table = info |>
+    filter(!is.na(sample_id)) |>
+    select(
+        sample_name = sample_id,
+        group = yang_pin_suo_shu_fen_zu_ming_cheng,
+        breed,
+        genotype
+    ) |>
+    mutate(
+        group = factor(group, levels = c("A", "B", "C")),
+        breed = factor(breed, levels = c("Duroc", "Landrace", "Yorkshire")),
+        genotype = factor(genotype, levels = c("AA", "GA", "GG"))
+    ) |>
+    column_to_rownames(var = "sample_name")
+
+cat("样本元数据表维度:", dim(sample_table), "\n")
+cat("各分组样本数:\n")
+print(table(sample_table$group))
+cat("\n各品种样本数:\n")
+print(table(sample_table$breed))
+cat("\n各基因型样本数:\n")
+print(table(sample_table$genotype))
+```
+
+## 读取分类学表格
+
+```{r}
+#| label: read-taxonomy
+taxon_table = read_csv(file.path(PATH, "tax-table.csv"))
+taxon_table = column_to_rownames(taxon_table, var = names(taxon_table)[1]) |>
+  tidy_taxonomy()
+```
+
+## 汇总序列量
+
+```{r}
+#| label: data-check-sample-sums
+sample_sums = colSums(otu_table)
+cat("各样本序列量统计:\n")
+summary(sample_sums)
+```
+
+```{r}
+#| label: plot-sample-sums
+#| fig-height: 5
+#| fig-width: 10
+data.frame(sample = names(sample_sums), reads = sample_sums) |>
+    ggplot(aes(x = reorder(sample, reads), y = reads)) +
+    geom_col() +
+    labs(x = "样本", y = "序列数") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 4))
+```
+
+
+```{r}
+#| label: plot-sample-sums-note
+#| echo: false
+#| results: asis
+render_figure_note("plot-sample-sums")
+```
+
+## 构建 microtable 对象
+
+```{r}
+#| label: data-create-microtable
+mt = microtable$new(
+    otu_table = otu_table,
+    sample_table = sample_table,
+    tax_table = taxon_table
+)
+```
+
+```{r}
+#| label: tidy-microtable
+# 剔除没有门水平分类的 ASV（通常是未比对上的噪音序列）
+mt$tax_table = subset(mt$tax_table, !is.na(Phylum))
+mt$tidy_dataset()
+
+cat("整理后的 microtable 对象:\n")
+cat("- ASV 数:", nrow(mt$otu_table), "\n")
+cat("- 样本数:", ncol(mt$otu_table), "\n")
+```
+
+## 保存处理好的表格
+
+```{r}
+#| label: save-microeco-tables
+dir.create("data/amplicon-sequencing", showWarnings = FALSE, recursive = TRUE)
+
+write.csv(mt$otu_table, file = "data/amplicon-sequencing/otu_table_mt.csv", row.names = TRUE)
+write.csv(mt$sample_table, file = "data/amplicon-sequencing/sample_table_mt.csv", row.names = TRUE)
+write.csv(mt$tax_table, file = "data/amplicon-sequencing/taxon_table_mt.csv", row.names = TRUE)
+
+cat("表格已保存至 data/amplicon-sequencing/\n")
+```

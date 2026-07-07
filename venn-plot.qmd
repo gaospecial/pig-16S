@@ -1,0 +1,86 @@
+# Venn diagram of ASVs
+
+a. Venn diagram of different genotypes of ASVs; b. Venn diagram of different pig breeds of ASVs. Black circle outlines represent different groups.
+
+(GG: *GG* genotype, GA: *GA* genotype, AA: *AA* genotype; D: Duroc; Y: Yorkshire; L: Landrace)
+
+## Load packages
+
+```{r}
+#| label: venn-load-packages
+#| message: false
+#| warning: false
+library(tidyverse)
+library(ggVennDiagram)
+library(patchwork)
+
+theme_set(theme_void())
+```
+
+## Prepare ASV sets
+
+```{r}
+#| label: venn-prepare-sets
+otu_table <- read.csv("data/amplicon-sequencing/otu_table_mt.csv", row.names = 1, check.names = FALSE)
+sample_table <- read.csv("data/amplicon-sequencing/sample_table_mt.csv", row.names = 1, check.names = FALSE) |>
+  rownames_to_column("sample") |>
+  mutate(
+    genotype = factor(genotype, levels = c("GG", "GA", "AA")),
+    breed = factor(breed, levels = c("Duroc", "Yorkshire", "Landrace"))
+  )
+
+asv_sets_by_group <- function(group_var, labels) {
+  sample_table |>
+    filter(!is.na(.data[[group_var]])) |>
+    group_by(.data[[group_var]]) |>
+    summarise(samples = list(intersect(sample, colnames(otu_table))), .groups = "drop") |>
+    mutate(
+      asvs = map(samples, function(sample_ids) {
+        rownames(otu_table)[rowSums(otu_table[, sample_ids, drop = FALSE] > 0) > 0]
+      }),
+      group_label = labels[as.character(.data[[group_var]])]
+    ) |>
+    select(group_label, asvs) |>
+    deframe()
+}
+
+genotype_sets <- asv_sets_by_group(
+  "genotype",
+  c(GG = "GG", GA = "GA", AA = "AA")
+)
+
+breed_sets <- asv_sets_by_group(
+  "breed",
+  c(Duroc = "D", Yorkshire = "Y", Landrace = "L")
+)
+
+venn_colors <- rep("black", 3)
+```
+
+## Venn diagram
+
+```{r}
+#| label: fig-venn-asv
+#| fig-width: 12
+#| fig-height: 6
+#| fig-cap: "Venn diagram of ASVs. a. Venn diagram of different genotypes of ASVs; b. Venn diagram of different pig breeds of ASVs."
+plot_venn <- function(sets, title) {
+  ggVennDiagram(
+    sets,
+    label_alpha = 0,
+    set_color = venn_colors,
+    set_size = 5,
+    label = "count"
+  ) +
+    scale_fill_gradient(low = "#F7FBFF", high = "#2B6CB0") +
+    labs(title = title) +
+    theme(
+      plot.title = element_text(face = "bold", hjust = 0, size = 13),
+      legend.position = "none"
+    )
+}
+
+plot_venn(genotype_sets, "a. Genotype") +
+  plot_venn(breed_sets, "b. Pig breed") +
+  plot_layout(ncol = 2)
+```

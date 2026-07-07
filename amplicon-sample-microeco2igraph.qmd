@@ -1,0 +1,288 @@
+# 网络分析
+
+基于微生物组数据构建共现网络（Co-occurrence network）。
+
+## 载入包
+
+```{r}
+#| label: network-load-packages
+library(tidyverse)
+library(microeco)
+library(igraph)
+library(tidygraph)
+library(ggraph)
+library(ggplot2)
+library(jsonlite)
+source("figure-notes.R")
+```
+
+## 读取 microtable 对象
+
+```{r}
+#| label: network-create-microtable
+otu_table <- read.csv("data/amplicon-sequencing/otu_table_mt.csv", row.names = 1, check.names = FALSE)
+sample_table <- read.csv("data/amplicon-sequencing/sample_table_mt.csv", row.names = 1, check.names = FALSE) |>
+    mutate(
+        group = factor(group, levels = c("A", "B", "C")),
+        breed = factor(breed, levels = c("Duroc", "Landrace", "Yorkshire")),
+        genotype = factor(genotype, levels = c("AA", "GA", "GG"))
+    )
+taxon_table <- read.csv("data/amplicon-sequencing/taxon_table_mt.csv", row.names = 1, check.names = FALSE)
+
+# 剔除 NA 分类
+keep_taxa <- !is.na(taxon_table$Genus) & taxon_table$Genus != "" &
+    !taxon_table$Genus %in% c("g__", "Unclassified")
+has_valid_taxa <- any(keep_taxa)
+taxon_table <- taxon_table[keep_taxa, ]
+otu_table <- otu_table[rownames(taxon_table), ]
+
+if (has_valid_taxa) {
+    mt <- microtable$new(otu_table = otu_table, sample_table = sample_table, tax_table = taxon_table)
+    mt$tidy_dataset()
+} else {
+    cat("当前分类表没有有效属水平注释（SILVA 数据库缺失时会标记为 Unclassified）。网络分析已跳过；提供 SILVA_DB_FILE 并重新运行 DADA2 注释后可启用本章分析。\n")
+}
+```
+
+```{r}
+#| label: network-plot-helper
+add_taxonomy_attrs <- function(network_obj, dataset) {
+    graph <- network_obj$res_network
+    tax_table <- dataset$tax_table |> as.data.frame()
+    vertex_names <- igraph::V(graph)$name
+    matched_taxa <- tax_table[match(vertex_names, rownames(tax_table)), , drop = FALSE]
+    genus <- if ("Genus" %in% names(matched_taxa)) matched_taxa$Genus else vertex_names
+
+    igraph::V(graph)$Genus <- ifelse(
+        is.na(genus) | genus == "",
+        vertex_names,
+        stringr::str_remove(genus, "^g__")
+    )
+    igraph::V(graph)$label_name <- ifelse(
+        igraph::V(graph)$Genus == vertex_names,
+        vertex_names,
+        paste0(igraph::V(graph)$Genus, "\n", vertex_names)
+    )
+    igraph::V(graph)$degree <- igraph::degree(graph)
+    graph
+}
+
+plot_network_ggraph <- function(network_obj, dataset, color_by = "module", label_top = 10) {
+    graph <- add_taxonomy_attrs(network_obj, dataset)
+    label_cutoff <- stats::quantile(igraph::V(graph)$degree, probs = 0.9, na.rm = TRUE)
+
+    tidygraph::as_tbl_graph(graph) |>
+        ggraph::ggraph(layout = "fr") +
+        ggraph::geom_edge_link(
+            aes(width = abs(weight), alpha = abs(weight)),
+            colour = "grey65",
+            show.legend = FALSE
+        ) +
+        ggraph::geom_node_point(
+            aes(color = .data[[color_by]], size = RelativeAbundance),
+            alpha = 0.9
+        ) +
+        ggraph::geom_node_text(
+            aes(label = ifelse(degree >= label_cutoff, Genus, "")),
+            repel = TRUE,
+            size = 2.6,
+            max.overlaps = label_top,
+            show.legend = FALSE
+        ) +
+        scale_edge_width(range = c(0.2, 1.2)) +
+        scale_edge_alpha(range = c(0.15, 0.55)) +
+        scale_size_continuous(range = c(1.8, 7), name = "Relative abundance") +
+        labs(color = stringr::str_to_title(color_by)) +
+        theme_void() +
+        theme(
+            legend.position = "right",
+            plot.margin = margin(8, 8, 8, 8)
+        )
+}
+```
+
+## 按基因型拆分子集
+
+```{r}
+#| label: split-by-genotype
+make_subset <- function(mt, genotype_name) {
+    sample_sub <- mt$sample_table[mt$sample_table$genotype == genotype_name, , drop = FALSE]
+    otu_sub <- mt$otu_table[, rownames(sample_sub), drop = FALSE]
+    tax_sub <- mt$tax_table[rownames(otu_sub), ]
+    m <- microtable$new(otu_table = otu_sub, tax_table = tax_sub, sample_table = sample_sub)
+    m$tidy_dataset()
+    return(m)
+}
+
+mt_AA <- make_subset(mt, "AA")
+mt_GA <- make_subset(mt, "GA")
+mt_GG <- make_subset(mt, "GG")
+
+cat("Genotype AA:", ncol(mt_AA$otu_table), "samples,", nrow(mt_AA$otu_table), "taxa\n")
+cat("Genotype GA:", ncol(mt_GA$otu_table), "samples,", nrow(mt_GA$otu_table), "taxa\n")
+cat("Genotype GG:", ncol(mt_GG$otu_table), "samples,", nrow(mt_GG$otu_table), "taxa\n")
+```
+
+## 共现网络构建
+
+使用 SparCC 方法计算相关性。
+
+```{r}
+#| label: build-network
+#| warning: false
+# SparCC method
+t1 <- trans_network$new(
+    dataset = mt,
+    cor_method = "spearman",
+    filter_thres = 0.001
+)
+t1$cal_network(COR_p_thru = 0.05, COR_cut = 0.4)
+t1$cal_module()
+```
+
+```{r}
+#| label: fig-plot-network
+#| fig-width: 10
+#| fig-height: 8
+#| fig-cap: "全部样本的共现网络，按属水平着色。"
+plot_network_ggraph(t1, mt, color_by = "Genus")
+```
+
+
+```{r}
+#| label: note-plot-network
+#| echo: false
+#| results: asis
+render_figure_note("plot-network")
+```
+
+### 网络属性
+
+```{r}
+#| label: network-attr
+res_network = t1$cal_network_attr()
+res_network
+```
+
+### Hub 节点
+
+```{r}
+#| label: hub-nodes
+node_table <- t1$res_node_table
+hub <- node_table[node_table$degree > quantile(node_table$degree, 0.9, na.rm = TRUE), ]
+hub[, c("Genus", "Abundance", "degree", "betweenness", "closeness")]
+```
+
+## 按基因型分别构建网络
+
+### AA 基因型网络
+
+```{r}
+#| label: fig-network-AA
+#| fig-width: 10
+#| fig-height: 8
+#| fig-cap: "AA 基因型样本的共现网络。"
+tAA <- trans_network$new(
+    dataset = mt_AA,
+    cor_method = "spearman",
+    filter_thres = 0.001
+)
+tAA$cal_network(COR_p_thru = 0.05, COR_cut = 0.4)
+tAA$cal_module()
+plot_network_ggraph(tAA, mt_AA, color_by = "module")
+```
+
+
+```{r}
+#| label: note-network-AA
+#| echo: false
+#| results: asis
+render_figure_note("network-AA")
+```
+
+```{r}
+#| label: network-attr-AA
+tAA$cal_network_attr()
+```
+
+### GA 基因型网络
+
+```{r}
+#| label: fig-network-GA
+#| fig-width: 10
+#| fig-height: 8
+#| fig-cap: "GA 基因型样本的共现网络。"
+tGA <- trans_network$new(
+    dataset = mt_GA,
+    cor_method = "spearman",
+    filter_thres = 0.001
+)
+tGA$cal_network(COR_p_thru = 0.05, COR_cut = 0.4)
+tGA$cal_module()
+plot_network_ggraph(tGA, mt_GA, color_by = "module")
+```
+
+
+```{r}
+#| label: note-network-GA
+#| echo: false
+#| results: asis
+render_figure_note("network-GA")
+```
+
+```{r}
+#| label: network-attr-GA
+tGA$cal_network_attr()
+```
+
+### GG 基因型网络
+
+```{r}
+#| label: fig-network-GG
+#| fig-width: 10
+#| fig-height: 8
+#| fig-cap: "GG 基因型样本的共现网络。"
+tGG <- trans_network$new(
+    dataset = mt_GG,
+    cor_method = "spearman",
+    filter_thres = 0.001
+)
+tGG$cal_network(COR_p_thru = 0.05, COR_cut = 0.4)
+tGG$cal_module()
+plot_network_ggraph(tGG, mt_GG, color_by = "module")
+```
+
+
+```{r}
+#| label: note-network-GG
+#| echo: false
+#| results: asis
+render_figure_note("network-GG")
+```
+
+```{r}
+#| label: network-attr-GG
+tGG$cal_network_attr()
+```
+
+## 网络属性比较
+
+```{r}
+#| label: network-comparison
+get_network_metric = function(network_obj, metric) {
+    network_obj$cal_network_attr()
+    attr_table = network_obj$res_network_attr
+    as.numeric(attr_table[metric, 1])
+}
+
+network_attrs <- data.frame(
+    Genotype = c("All", "AA", "GA", "GG"),
+    Nodes = c(get_network_metric(t1, "Vertex"), get_network_metric(tAA, "Vertex"),
+              get_network_metric(tGA, "Vertex"), get_network_metric(tGG, "Vertex")),
+    Edges = c(get_network_metric(t1, "Edge"), get_network_metric(tAA, "Edge"),
+              get_network_metric(tGA, "Edge"), get_network_metric(tGG, "Edge")),
+    Modularity = c(get_network_metric(t1, "Modularity"), get_network_metric(tAA, "Modularity"),
+                   get_network_metric(tGA, "Modularity"), get_network_metric(tGG, "Modularity"))
+)
+network_attrs
+```

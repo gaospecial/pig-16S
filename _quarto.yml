@@ -1,0 +1,39 @@
+project:
+  type: book
+
+execute:
+  freeze: auto
+
+book:
+  title: "猪粪便 16S 扩增子数据分析"
+  subtitle: "福农 166 个猪粪便 16S V4 区 Illumina PE250 测序及分析"
+  author: "SynComs"
+  date: now
+  chapters:
+    - index.qmd
+    - summary.qmd
+    - part: 数据预处理
+      chapters:
+        - Preprocess/amplicon-dada2.qmd
+    - part: 扩增子数据分析
+      chapters:
+        - amplicon-data.qmd
+        - amplicon-sample-alpha.qmd
+        - alpha-diversity.qmd
+        - amplicon-sample-beta.qmd
+        - amplicon-sample-taxonomy.qmd
+        - venn-plot.qmd
+        - amplicon-sample-difference.qmd
+        - amplicon-sample-microeco2igraph.qmd
+        - PICRUSt-heatmap.qmd
+        - paper-results.qmd
+    - references.qmd
+
+bibliography: [references.bib]
+
+format:
+  html:
+    theme: cosmo
+    fig-width: 7
+    warning: false
+    message: false
