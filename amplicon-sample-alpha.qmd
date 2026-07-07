@@ -1,126 +1,177 @@
-# Alpha 多样性分析
+# Alpha diversity comparison
 
-- 构建 microtable 对象
-- 抽平处理
-- 计算 Alpha 多样性指标
-- 按分组进行比较和可视化
+本节将不同品种和不同 `FUT1` 基因型的 Alpha 多样性比较拼成一幅图，仅展示 `Chao1`、`Shannon` 和 `Simpson` 指标。
 
 ## 载入包
 
 ```{r}
 #| label: alpha-load-packages
+#| message: false
+#| warning: false
 library(tidyverse)
 library(microeco)
 library(patchwork)
-library(jsonlite)
-source("figure-notes.R")
+
+theme_set(theme_bw())
 ```
 
-## 构建 microtable 对象
+## 计算 Alpha 多样性
 
 ```{r}
-#| label: alpha-create-microtable
-# 读取保存的 CSV 文件
+#| label: alpha-prepare-data
 otu_table <- read.csv("data/amplicon-sequencing/otu_table_mt.csv", row.names = 1, check.names = FALSE)
 sample_table <- read.csv("data/amplicon-sequencing/sample_table_mt.csv", row.names = 1, check.names = FALSE) |>
-    mutate(
-        group = factor(group, levels = c("A", "B", "C")),
-        breed = factor(breed, levels = c("Duroc", "Landrace", "Yorkshire")),
-        genotype = factor(genotype, levels = c("AA", "GA", "GG"))
-    )
+  mutate(
+    group = factor(group, levels = c("A", "B", "C")),
+    breed = factor(breed, levels = c("Duroc", "Landrace", "Yorkshire")),
+    genotype = factor(genotype, levels = c("AA", "GA", "GG"))
+  )
 taxon_table <- read.csv("data/amplicon-sequencing/taxon_table_mt.csv", row.names = 1, check.names = FALSE)
 
-mt <- microtable$new(otu_table = otu_table, sample_table = sample_table, tax_table = taxon_table)
-```
+mt <- microtable$new(
+  otu_table = otu_table,
+  sample_table = sample_table,
+  tax_table = taxon_table
+)
+mt$tidy_dataset()
 
-## 序列量统计与抽平
+alpha_measures <- c("Chao1", "Shannon", "Simpson")
+mt$cal_alphadiv(measures = alpha_measures)
 
-```{r}
-#| label: alpha-check-sample-sums
-# 检查各样本的序列量，确定抽平深度
-mt$sample_sums() |> summary()
-```
+alpha_data <- mt$alpha_diversity |>
+  as.data.frame() |>
+  rownames_to_column("sample") |>
+  left_join(
+    mt$sample_table |> as.data.frame() |> rownames_to_column("sample"),
+    by = "sample"
+  ) |>
+  pivot_longer(all_of(alpha_measures), names_to = "Index", values_to = "Value") |>
+  mutate(Index = factor(Index, levels = alpha_measures))
 
-```{r}
-#| label: rarefy
-mt_rarefied = mt$clone(deep = TRUE)
-mt_rarefied$rarefy_samples(sample.size = max(min(mt$sample_sums(), 20000)))
-mt_rarefied$tidy_dataset()
-```
+significance_label <- function(p) {
+  case_when(
+    p < 0.001 ~ "***",
+    p < 0.01 ~ "**",
+    p < 0.05 ~ "*",
+    TRUE ~ NA_character_
+  )
+}
 
-```{r}
-#| label: check-rarefied
-mt_rarefied$sample_sums() |> summary()
-```
+pairwise_significance <- function(data, group_var) {
+  group_levels <- levels(droplevels(data[[group_var]]))
+  comparisons <- combn(group_levels, 2, simplify = FALSE)
+  empty_result <- tibble(
+    Index = factor(levels = levels(data$Index)),
+    group1 = character(),
+    group2 = character(),
+    p_value = numeric(),
+    p_adjust = numeric(),
+    label = character(),
+    x = numeric(),
+    xend = numeric(),
+    y = numeric(),
+    y_text = numeric(),
+    tick = numeric()
+  )
 
-## Alpha 多样性指标计算
+  result <- map_dfr(levels(data$Index), function(index_name) {
+    index_data <- data |> filter(Index == index_name)
+    y_range <- range(index_data$Value, na.rm = TRUE)
+    y_span <- diff(y_range)
+    if (!is.finite(y_span) || y_span == 0) {
+      y_span <- max(y_range[2], 0.01)
+    }
 
-```{r}
-#| label: calc-alpha
-measures = c("Observed", "Chao1", "Shannon", "Simpson")
-mt$cal_alphadiv(measures = measures)
+    tests <- map_dfr(comparisons, function(pair) {
+      x1 <- index_data |> filter(.data[[group_var]] == pair[1]) |> pull(Value)
+      x2 <- index_data |> filter(.data[[group_var]] == pair[2]) |> pull(Value)
 
-plot_alpha_box = function(dataset, group_var) {
-    dataset$alpha_diversity |>
-        as.data.frame() |>
-        rownames_to_column("sample") |>
-        left_join(
-            dataset$sample_table |> as.data.frame() |> rownames_to_column("sample"),
-            by = "sample"
-        ) |>
-        pivot_longer(all_of(measures), names_to = "measure", values_to = "value") |>
-        ggplot(aes(x = .data[[group_var]], y = value, fill = .data[[group_var]])) +
-        geom_boxplot(outlier.shape = NA, alpha = 0.7) +
-        geom_jitter(width = 0.18, size = 1.4, alpha = 0.75) +
-        facet_wrap(~ measure, scales = "free_y") +
-        labs(x = NULL, y = "Alpha diversity") +
-        theme_bw() +
-        theme(legend.position = "none")
+      tibble(
+        group1 = pair[1],
+        group2 = pair[2],
+        p_value = wilcox.test(x1, x2, exact = FALSE)$p.value
+      )
+    }) |>
+      mutate(
+        p_adjust = p.adjust(p_value, method = "BH"),
+        label = significance_label(p_adjust)
+      ) |>
+      filter(!is.na(label)) |>
+      arrange(p_adjust)
+
+    if (nrow(tests) == 0) {
+      return(empty_result)
+    }
+
+    tests |>
+      mutate(
+        Index = index_name,
+        x = match(group1, group_levels),
+        xend = match(group2, group_levels),
+        y = y_range[2] + y_span * (0.04 + row_number() * 0.055),
+        y_text = y + y_span * 0.018,
+        tick = y_span * 0.018
+      )
+  })
+
+  bind_rows(empty_result, result) |>
+    mutate(Index = factor(Index, levels = levels(data$Index)))
 }
 ```
 
-## 按分组类型比较
-
-### 按品种比较
+## Alpha diversity figure
 
 ```{r}
-#| label: fig-alpha-by-breed
-#| fig-height: 8
-#| fig-width: 10
-#| fig-cap: "按品种（Duroc/Landrace/Yorkshire）的 Alpha 多样性比较。"
-mt$sample_table$breed <- factor(mt$sample_table$breed, levels = c("Duroc", "Landrace", "Yorkshire"))
-t2 = trans_alpha$new(dataset = mt, group = "breed")
-t2$cal_diff(method = "KW")
+#| label: fig-alpha-combined
+#| fig-width: 6
+#| fig-height: 6
+#| fig-asp: 1
+#| fig-cap: "不同品种和不同 FUT1 基因型的 Alpha 多样性比较。上排为品种比较，下排为基因型比较；三列依次为 Chao1、Shannon 和 Simpson。"
+plot_alpha_panel <- function(data, group_var, x_label, show_x_title = FALSE) {
+  sig_data <- pairwise_significance(data, group_var)
 
-plot_alpha_box(mt, "breed")
-```
+  data |>
+    ggplot(aes(x = .data[[group_var]], y = Value, fill = .data[[group_var]])) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.7, width = 0.65) +
+    geom_jitter(width = 0.16, size = 0.55, alpha = 0.65) +
+    geom_segment(
+      data = sig_data,
+      aes(x = x, xend = xend, y = y, yend = y),
+      inherit.aes = FALSE
+    ) +
+    geom_segment(
+      data = sig_data,
+      aes(x = x, xend = x, y = y - tick, yend = y),
+      inherit.aes = FALSE
+    ) +
+    geom_segment(
+      data = sig_data,
+      aes(x = xend, xend = xend, y = y - tick, yend = y),
+      inherit.aes = FALSE
+    ) +
+    geom_text(
+      data = sig_data,
+      aes(x = (x + xend) / 2, y = y_text, label = label),
+      inherit.aes = FALSE,
+      size = 2
+    ) +
+    facet_wrap(~ Index, scales = "free_y", nrow = 1) +
+    scale_y_continuous(expand = expansion(mult = c(0.04, 0.14))) +
+    labs(x = if (show_x_title) x_label else NULL, y = "Alpha diversity") +
+    theme(
+      legend.position = "none",
+      strip.text = element_text(face = "bold", size = 6),
+      axis.text = element_text(size = 5),
+      axis.text.x = element_text(angle = 30, hjust = 1),
+      axis.title = element_text(size = 7),
+      panel.grid.minor = element_blank()
+    )
+}
 
+breed_plot <- plot_alpha_panel(alpha_data, "breed", "Breed")
+genotype_plot <- plot_alpha_panel(alpha_data, "genotype", "FUT1 genotype", show_x_title = TRUE)
 
-```{r}
-#| label: note-alpha-by-breed
-#| echo: false
-#| results: asis
-render_figure_note("alpha-by-breed")
-```
-
-### 按基因型比较
-
-```{r}
-#| label: fig-alpha-by-genotype
-#| fig-height: 8
-#| fig-width: 10
-#| fig-cap: "按基因型（AA/GA/GG）的 Alpha 多样性比较。"
-mt$sample_table$genotype <- factor(mt$sample_table$genotype, levels = c("AA", "GA", "GG"))
-t3 = trans_alpha$new(dataset = mt, group = "genotype")
-t3$cal_diff(method = "KW")
-
-plot_alpha_box(mt, "genotype")
-```
-
-
-```{r}
-#| label: note-alpha-by-genotype
-#| echo: false
-#| results: asis
-render_figure_note("alpha-by-genotype")
+breed_plot / genotype_plot +
+  plot_layout(ncol = 1) +
+  plot_annotation(tag_levels = "a")
 ```

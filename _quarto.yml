@@ -19,14 +19,12 @@ book:
       chapters:
         - amplicon-data.qmd
         - amplicon-sample-alpha.qmd
-        - alpha-diversity.qmd
         - amplicon-sample-beta.qmd
         - amplicon-sample-taxonomy.qmd
-        - venn-plot.qmd
+        - amplicon-sample-venn.qmd
         - amplicon-sample-difference.qmd
         - amplicon-sample-microeco2igraph.qmd
-        - PICRUSt-heatmap.qmd
-        - paper-results.qmd
+        - amplicon-sample-picrust.qmd
     - references.qmd
 
 bibliography: [references.bib]
