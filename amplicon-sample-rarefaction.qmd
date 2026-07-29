@@ -1,0 +1,148 @@
+# Supplementary Figure S1. Rarefaction curve of sample
+
+a. The rarefaction curves of all samples; b. The rarefaction curves of different genotype groups; c. The rarefaction curves of different pig breeds. Curves of different colors represent different samples or groups. The horizontal axis indicates the randomly sampled sequencing data volume, while the vertical axis shows the observed number of ASVs.
+
+(GG: *GG* genotype, GA: *GA* genotype, AA: *AA* genotype; D: Duroc; Y: Yorkshire; L: Landrace)
+
+```{r}
+#| label: rarefaction-prepare-data
+#| include: false
+otu_table <- read.csv("data/amplicon-sequencing/otu_table_mt.csv", row.names = 1, check.names = FALSE)
+sample_table <- read.csv("data/amplicon-sequencing/sample_table_mt.csv", row.names = 1, check.names = FALSE)
+sample_table$sample <- rownames(sample_table)
+sample_table$genotype <- factor(sample_table$genotype, levels = c("GG", "GA", "AA"))
+sample_table$breed <- factor(sample_table$breed, levels = c("Duroc", "Yorkshire", "Landrace"))
+sample_table$breed_label <- c(Duroc = "D", Yorkshire = "Y", Landrace = "L")[as.character(sample_table$breed)]
+
+otu_table <- otu_table[, sample_table$sample, drop = FALSE]
+```
+
+```{r}
+#| label: rarefaction-functions
+#| include: false
+rarefy_expected <- function(counts, depths) {
+  counts <- counts[counts > 0]
+  total <- sum(counts)
+  depths <- depths[depths <= total]
+
+  observed <- vapply(depths, function(depth) {
+    if (depth == 0) {
+      return(0)
+    }
+
+    sum(1 - exp(lchoose(total - counts, depth) - lchoose(total, depth)), na.rm = TRUE)
+  }, numeric(1))
+
+  data.frame(depth = depths, observed_asvs = observed)
+}
+
+make_depths <- function(total_reads, n_points = 80) {
+  unique(round(seq(1, total_reads, length.out = min(n_points, total_reads))))
+}
+
+sample_rarefaction <- do.call(rbind, lapply(colnames(otu_table), function(sample_id) {
+  curve <- rarefy_expected(otu_table[, sample_id], make_depths(sum(otu_table[, sample_id])))
+  curve$sample <- sample_id
+  curve$genotype <- sample_table[sample_id, "genotype"]
+  curve$breed <- sample_table[sample_id, "breed"]
+  curve
+}))
+
+group_rarefaction <- function(group_var, label_var = group_var) {
+  groups <- unique(sample_table[[group_var]])
+  groups <- groups[!is.na(groups)]
+
+  do.call(rbind, lapply(groups, function(group_value) {
+    sample_ids <- sample_table$sample[sample_table[[group_var]] == group_value]
+    counts <- rowSums(otu_table[, sample_ids, drop = FALSE])
+    curve <- rarefy_expected(counts, make_depths(sum(counts)))
+    curve$group <- unique(sample_table[[label_var]][sample_table[[group_var]] == group_value])[1]
+    curve
+  }))
+}
+
+genotype_rarefaction <- group_rarefaction("genotype")
+breed_rarefaction <- group_rarefaction("breed", "breed_label")
+
+sample_colors <- grDevices::hcl.colors(ncol(otu_table), palette = "Viridis")
+names(sample_colors) <- colnames(otu_table)
+genotype_colors <- c(GG = "#1B9E77", GA = "#D95F02", AA = "#7570B3")
+breed_colors <- c(D = "#1F77B4", Y = "#E6AB02", L = "#66A61E")
+
+draw_rarefaction_panel <- function(data, id_col, colors, main, xlab, ylab, legend_title = NULL) {
+  plot(
+    NA,
+    xlim = range(data$depth),
+    ylim = range(data$observed_asvs),
+    xlab = xlab,
+    ylab = ylab,
+    main = main,
+    las = 1
+  )
+  grid(col = "grey90")
+
+  ids <- unique(data[[id_col]])
+  for (id in ids) {
+    curve <- data[data[[id_col]] == id, ]
+    lines(curve$depth, curve$observed_asvs, col = colors[as.character(id)], lwd = if (length(ids) > 20) 0.8 else 2)
+  }
+
+  if (!is.null(legend_title)) {
+    legend(
+      "bottomright",
+      legend = names(colors),
+      col = colors,
+      lwd = 2,
+      title = legend_title,
+      bty = "n",
+      cex = 0.9
+    )
+  }
+}
+```
+
+```{r}
+#| label: fig-s1-rarefaction
+#| fig-width: 12
+#| fig-height: 4.5
+#| fig-cap: "Supplementary Figure S1. Rarefaction curve of sample. a. The rarefaction curves of all samples; b. The rarefaction curves of different genotype groups; c. The rarefaction curves of different pig breeds. Curves of different colors represent different samples or groups. The horizontal axis indicates the randomly sampled sequencing data volume, while the vertical axis shows the observed number of ASVs. (GG: GG genotype, GA: GA genotype, AA: AA genotype; D: Duroc; Y: Yorkshire; L: Landrace)"
+par(
+  mfrow = c(1, 3),
+  mar = c(4.4, 4.6, 2.6, 1),
+  oma = c(0, 0, 0, 0),
+  bg = "white",
+  fg = "black",
+  col.axis = "black",
+  col.lab = "black",
+  col.main = "black"
+)
+
+draw_rarefaction_panel(
+  sample_rarefaction,
+  "sample",
+  sample_colors,
+  "a. All samples",
+  "Sequencing reads sampled",
+  "Observed ASVs"
+)
+
+draw_rarefaction_panel(
+  genotype_rarefaction,
+  "group",
+  genotype_colors,
+  "b. Genotype",
+  "Sequencing reads sampled",
+  "Observed ASVs",
+  "Genotype"
+)
+
+draw_rarefaction_panel(
+  breed_rarefaction,
+  "group",
+  breed_colors,
+  "c. Pig breed",
+  "Sequencing reads sampled",
+  "Observed ASVs",
+  "Breed"
+)
+```

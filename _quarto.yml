@@ -18,6 +18,7 @@ book:
     - part: 扩增子数据分析
       chapters:
         - amplicon-data.qmd
+        - amplicon-sample-rarefaction.qmd
         - amplicon-sample-alpha.qmd
         - amplicon-sample-beta.qmd
         - amplicon-sample-taxonomy.qmd
